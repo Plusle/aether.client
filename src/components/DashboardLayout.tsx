@@ -1,13 +1,14 @@
 import { useState, useCallback, useRef, useEffect, Fragment } from 'react'
+import { createPortal } from 'react-dom'
 import Calendar from './Calendar'
 import ChatBox from './ChatBox'
 import Weather from './Weather'
-import News from './News'
+import RSS from './RSS'
 
 const WIDGET_DEFS: Record<string, { title: string; component: React.ReactNode }> = {
   calendar: { title: 'Calendar', component: <Calendar /> },
   weather: { title: 'Weather', component: <Weather /> },
-  news: { title: 'News', component: <News /> },
+  rss: { title: 'RSS', component: <RSS /> },
 }
 
 type DropTarget =
@@ -17,9 +18,16 @@ type DropTarget =
 
 function DashboardLayout() {
   const [chatWidthPercent, setChatWidthPercent] = useState(20)
-  const [grid, setGrid] = useState([['news'], ['calendar', 'weather']])
+  const [grid, setGrid] = useState([['rss'], ['calendar', 'weather']])
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null)
+  const [visibleWidgets, setVisibleWidgets] = useState<Set<string>>(
+    () => new Set(Object.keys(WIDGET_DEFS))
+  )
+  const [widgetMenuOpen, setWidgetMenuOpen] = useState(false)
+  const [widgetMenuPos, setWidgetMenuPos] = useState<{ top: number; right: number } | null>(null)
+  const widgetMenuBtnRef = useRef<HTMLButtonElement>(null)
+  const widgetMenuRef = useRef<HTMLDivElement>(null)
 
   const dropTargetRef = useRef<DropTarget | null>(null)
   const dragIdRef = useRef<string | null>(null)
@@ -28,6 +36,41 @@ function DashboardLayout() {
   useEffect(() => { gridRef.current = grid }, [grid])
   useEffect(() => { dropTargetRef.current = dropTarget }, [dropTarget])
   useEffect(() => { dragIdRef.current = dragId }, [dragId])
+
+  // Close widget menu when clicking outside
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (widgetMenuRef.current && !widgetMenuRef.current.contains(e.target as Node) &&
+          widgetMenuBtnRef.current && !widgetMenuBtnRef.current.contains(e.target as Node)) {
+        setWidgetMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const handleToggleWidget = (widgetId: string) => {
+    setVisibleWidgets(prev => {
+      const next = new Set(prev)
+      if (next.has(widgetId)) {
+        next.delete(widgetId)
+      } else {
+        next.add(widgetId)
+      }
+      // Always rebuild grid: remove widget from all cols, then add back if visible
+      let newGrid = gridRef.current.map(col => col.filter(id => id !== widgetId)).filter(col => col.length > 0)
+      if (next.has(widgetId)) {
+        if (newGrid.length > 0) {
+          newGrid[0].push(widgetId)
+        } else {
+          newGrid.push([widgetId])
+        }
+      }
+      setGrid(newGrid)
+      gridRef.current = newGrid
+      return next
+    })
+  }
 
   const setDrop = (target: DropTarget | null) => {
     setDropTarget(target)
@@ -142,8 +185,73 @@ function DashboardLayout() {
   return (
     <div style={{ display: 'flex', height: '100vh' }}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', padding: '16px', overflowY: 'auto' }}>
-        <header style={{ padding: '16px', border: '1px solid #ccc' }}>
+        <header style={{ padding: '16px', border: '1px solid #ccc', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <h1 style={{ margin: 0 }}>Dashboard</h1>
+          <div style={{ position: 'relative' }}>
+            <button
+              ref={widgetMenuBtnRef}
+              onClick={() => {
+                if (!widgetMenuOpen && widgetMenuBtnRef.current) {
+                  const rect = widgetMenuBtnRef.current.getBoundingClientRect()
+                  setWidgetMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+                }
+                setWidgetMenuOpen(!widgetMenuOpen)
+              }}
+              style={{
+                padding: '6px 12px',
+                borderRadius: '6px',
+                border: '1px solid var(--border)',
+                background: 'var(--bg)',
+                color: 'var(--text)',
+                cursor: 'pointer',
+                fontSize: '18px',
+                lineHeight: 1,
+              }}
+              title="Manage widgets"
+            >
+              ⋮
+            </button>
+          </div>
+          {widgetMenuOpen && widgetMenuPos && createPortal(
+            <div
+              ref={widgetMenuRef}
+              style={{
+                position: 'fixed',
+                top: widgetMenuPos.top,
+                right: widgetMenuPos.right,
+                zIndex: 1000,
+                minWidth: '180px',
+                background: 'var(--bg)',
+                border: '1px solid var(--border)',
+                borderRadius: '8px',
+                boxShadow: 'var(--shadow)',
+                padding: '8px 0',
+              }}
+            >
+              {Object.entries(WIDGET_DEFS).map(([id, def]) => (
+                <label
+                  key={id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '8px 12px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    color: 'var(--text-h)',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={visibleWidgets.has(id)}
+                    onChange={() => handleToggleWidget(id)}
+                  />
+                  {def.title}
+                </label>
+              ))}
+            </div>,
+            document.body,
+          )}
         </header>
         <div style={{ display: 'flex', flexDirection: 'row', gap: '0', flex: 1 }}>
           {grid.map((col, colIdx) => (
