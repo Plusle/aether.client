@@ -2,7 +2,7 @@
 
 This document describes all HTTP endpoints for the Aether backend, organized by module. Use this as a reference for developing client applications.
 
-**Base URL:** `http://<your-server>:8080`
+**Base URL:** `http://<your-server>:9080`
 
 **Content-Type:** `application/json`
 
@@ -14,15 +14,15 @@ No authentication is required — all endpoints are publicly accessible.
 
 ```bash
 # 1. Register a weather region
-curl -X POST http://localhost:8080/weather/regions \
+curl -X POST http://localhost:9080/weather/regions \
   -H "Content-Type: application/json" \
   -d '{"location_id": "101010100", "name": "Beijing"}'
 
 # 2. Fetch weather data
-curl -X POST http://localhost:8080/weather/update
+curl -X POST http://localhost:9080/weather/update
 
 # 3. Read the records
-curl http://localhost:8080/weather/regions/101010100/records?limit=12
+curl http://localhost:9080/weather/regions/101010100/records?limit=12
 ```
 
 ---
@@ -626,7 +626,7 @@ GET /calendar/events/{id}
 
 ### Update Event
 
-Update an existing event.
+Update an existing event. Supports partial updates — only the fields you provide will be changed; omitted fields are left unchanged.
 
 ```
 PUT /calendar/events/{id}
@@ -637,16 +637,21 @@ PUT /calendar/events/{id}
 ```json
 {
   "title": "Team Meeting Updated",
-  "description": "New description",
-  "location": "Room B",
-  "start_time": "2024-01-15T10:00:00Z",
-  "end_time": "2024-01-15T11:00:00Z",
-  "status": "confirmed",
-  "category_id": 1
+  "status": "confirmed"
 }
 ```
 
-**Fields:** All fields required (same as create event)
+**Fields (all optional except you need to provide at least one):**
+
+- `title` (optional): Event title
+- `description` (optional): Event description
+- `location` (optional): Event location
+- `start_time` (optional): Start time (ISO 8601)
+- `end_time` (optional): End time (ISO 8601, null for all-day)
+- `status` (optional): Event status
+- `category_id` (optional): Category ID
+
+**Note:** Due to the partial update implementation, you cannot set a nullable field (like `description`) to `null` via this endpoint. To clear a field, use a full update with all fields specified.
 
 **Response:** `200 OK`
 

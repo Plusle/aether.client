@@ -58,3 +58,9 @@ export function createEvent(payload: CreateEventPayload): Promise<CalendarEvent>
 export function deleteEvent(id: number): Promise<void> {
   return apiDelete(`/calendar/events/${id}`);
 }
+
+export type UpdateEventPayload = Partial<CreateEventPayload>
+
+export function updateEvent(id: number, payload: UpdateEventPayload): Promise<CalendarEvent> {
+  return apiPut<CalendarEvent>(`/calendar/events/${id}`, payload)
+}

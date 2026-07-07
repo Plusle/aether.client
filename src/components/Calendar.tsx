@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import {
-  listCategories, listEvents, createEvent, deleteEvent, createCategory,
+  listCategories, listEvents, createEvent, deleteEvent, updateEvent, createCategory,
   type CalendarCategory, type CalendarEvent,
 } from '../services/calendarApi'
 
@@ -43,6 +43,18 @@ function Calendar() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Edit mode state for popup
+  const [editMode, setEditMode] = useState(false)
+  const [draftTitle, setDraftTitle] = useState('')
+  const [draftDescription, setDraftDescription] = useState('')
+  const [draftLocation, setDraftLocation] = useState('')
+  const [draftStartTime, setDraftStartTime] = useState('')
+  const [draftEndTime, setDraftEndTime] = useState('')
+  const [draftAllDay, setDraftAllDay] = useState(false)
+  const [draftCategoryId, setDraftCategoryId] = useState(0)
+  const [draftStatus, setDraftStatus] = useState('scheduled')
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
   const viewWrapperRef = useRef<HTMLDivElement>(null)
   const transitioningRef = useRef(false)
 
@@ -75,6 +87,27 @@ function Calendar() {
       .catch(() => setError('Failed to load events'))
       .finally(() => setLoading(false))
   }, [currentDate.getFullYear(), currentDate.getMonth()])
+
+  // Initialize draft fields when popup opens
+  useEffect(() => {
+    if (popupEvent) {
+      setEditMode(false)
+      setConfirmDelete(false)
+      setDraftTitle(popupEvent.title)
+      setDraftDescription(popupEvent.description ?? '')
+      setDraftLocation(popupEvent.location ?? '')
+      setDraftAllDay(popupEvent.end_time === null)
+      if (popupEvent.end_time === null) {
+        setDraftStartTime(formatDateTimeLocalInput(new Date(popupEvent.start_time)))
+        setDraftEndTime('')
+      } else {
+        setDraftStartTime(formatDateTimeLocalInput(new Date(popupEvent.start_time)))
+        setDraftEndTime(formatDateTimeLocalInput(new Date(popupEvent.end_time)))
+      }
+      setDraftCategoryId(popupEvent.category_id)
+      setDraftStatus(popupEvent.status)
+    }
+  }, [popupEvent?.id])
 
   // ── Symmetric two-phase transition: collapse then expand ──────
   const animateTransition = (
@@ -224,6 +257,43 @@ function Calendar() {
     }
   }
 
+  const handleUpdateEvent = async () => {
+    if (!popupEvent) return
+    try {
+      // Build payload with only changed fields
+      const payload: Record<string, unknown> = {}
+      if (draftTitle !== popupEvent.title) payload.title = draftTitle
+      if (draftDescription !== (popupEvent.description ?? '')) payload.description = draftDescription || undefined
+      if (draftLocation !== (popupEvent.location ?? '')) payload.location = draftLocation || undefined
+
+      const newStart = new Date(draftStartTime)
+      const oldStart = new Date(popupEvent.start_time)
+      if (newStart.getTime() !== oldStart.getTime()) payload.start_time = newStart.toISOString()
+
+      if (draftAllDay) {
+        if (popupEvent.end_time !== null) payload.end_time = null
+      } else {
+        const newEnd = new Date(draftEndTime)
+        const oldEnd = popupEvent.end_time ? new Date(popupEvent.end_time) : null
+        if (!oldEnd || newEnd.getTime() !== oldEnd.getTime()) payload.end_time = newEnd.toISOString()
+      }
+
+      if (draftCategoryId !== popupEvent.category_id) payload.category_id = draftCategoryId
+      if (draftStatus !== popupEvent.status) payload.status = draftStatus
+
+      if (Object.keys(payload).length === 0) {
+        setEditMode(false)
+        return
+      }
+
+      const updated = await updateEvent(popupEvent.id, payload)
+      setApiEvents(prev => prev.map(e => e.id === updated.id ? updated : e))
+      setEditMode(false)
+    } catch {
+      setError('Failed to update event')
+    }
+  }
+
   const handleAddCategory = async (name: string, color: string): Promise<number> => {
     try {
       const newCat = await createCategory(name, color)
@@ -334,7 +404,7 @@ function Calendar() {
 
       {/* Animated view container */}
       <div style={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', background: 'var(--bg)' }}>
-        <div ref={viewWrapperRef} style={{ width: '100%', height: '100%' }}>
+        <div ref={viewWrapperRef} style={{ width: '100%', height: '100%', overflow: 'auto' }}>
           {viewMode === 'month'
             ? <MonthView currentDate={currentDate} events={events} onDayClick={handleDayClick} />
             : <DayView currentDate={selectedDate} events={events} onEventClick={(ev) => setPopupEvent(ev)} onEmptyClick={handleEmptySlotClick} />
@@ -371,77 +441,305 @@ function Calendar() {
               boxShadow: 'var(--shadow)',
             }}
           >
-            <div style={{
-              fontSize: '16px',
-              fontWeight: 600,
-              color: 'var(--text-h)',
-              marginBottom: '12px',
-            }}>
-              {popupEvent.title}
-            </div>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              marginBottom: '12px',
-              fontSize: '13px',
-              color: 'var(--text)',
-            }}>
-              <span style={{
-                width: '10px',
-                height: '10px',
-                borderRadius: '50%',
-                background: popupEvent.color,
-                display: 'inline-block',
-                flexShrink: 0,
-              }} />
-              {popupEvent.end_time
-                ? `${formatPopupTime(popupEvent.start_time)} – ${formatPopupTime(popupEvent.end_time)}`
-                : 'All day'}
-            </div>
-            {popupEvent.description && (
-              <div style={{
-                fontSize: '13px',
-                color: 'var(--text)',
-                lineHeight: 1.5,
-                marginBottom: '12px',
-              }}>
-                {popupEvent.description}
-              </div>
-            )}
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button
-                onClick={() => handleDeleteEvent(popupEvent.id)}
-                style={{
-                  flex: 1,
-                  padding: '8px',
-                  borderRadius: '6px',
-                  border: '1px solid #e53e3e',
-                  background: 'rgba(229, 62, 62, 0.1)',
-                  color: '#e53e3e',
-                  cursor: 'pointer',
-                  fontSize: '13px',
+            {editMode ? (
+              // Edit mode: editable fields
+              <>
+                <input
+                  value={draftTitle}
+                  onChange={(e) => setDraftTitle(e.target.value)}
+                  placeholder="Event title"
+                  style={{
+                    padding: '8px 10px',
+                    borderRadius: '6px',
+                    border: '1px solid var(--border)',
+                    background: 'var(--bg)',
+                    color: 'var(--text-h)',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    marginBottom: '10px',
+                  }}
+                />
+                <textarea
+                  value={draftDescription}
+                  onChange={(e) => setDraftDescription(e.target.value)}
+                  placeholder="Description (optional)"
+                  rows={2}
+                  style={{
+                    padding: '8px 10px',
+                    borderRadius: '6px',
+                    border: '1px solid var(--border)',
+                    background: 'var(--bg)',
+                    color: 'var(--text-h)',
+                    fontSize: '13px',
+                    resize: 'vertical',
+                    fontFamily: 'inherit',
+                    marginBottom: '10px',
+                  }}
+                />
+                <input
+                  value={draftLocation}
+                  onChange={(e) => setDraftLocation(e.target.value)}
+                  placeholder="Location (optional)"
+                  style={{
+                    padding: '8px 10px',
+                    borderRadius: '6px',
+                    border: '1px solid var(--border)',
+                    background: 'var(--bg)',
+                    color: 'var(--text-h)',
+                    fontSize: '13px',
+                    marginBottom: '10px',
+                  }}
+                />
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'var(--text)', marginBottom: '8px' }}>
+                  <input type="checkbox" checked={draftAllDay} onChange={(e) => setDraftAllDay(e.target.checked)} />
+                  All day
+                </label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '10px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    <span style={{ fontSize: '11px', color: 'var(--text)' }}>Start</span>
+                    <input
+                      type="datetime-local"
+                      value={draftStartTime}
+                      onChange={(e) => setDraftStartTime(e.target.value)}
+                      style={{
+                        padding: '6px 8px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg)',
+                        color: 'var(--text-h)',
+                        fontSize: '13px',
+                      }}
+                    />
+                  </div>
+                  {!draftAllDay && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      <span style={{ fontSize: '11px', color: 'var(--text)' }}>End</span>
+                      <input
+                        type="datetime-local"
+                        value={draftEndTime}
+                        onChange={(e) => setDraftEndTime(e.target.value)}
+                        style={{
+                          padding: '6px 8px',
+                          borderRadius: '6px',
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg)',
+                          color: 'var(--text-h)',
+                          fontSize: '13px',
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '10px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    <span style={{ fontSize: '11px', color: 'var(--text)' }}>Category</span>
+                    <select
+                      value={draftCategoryId}
+                      onChange={(e) => setDraftCategoryId(Number(e.target.value))}
+                      style={{
+                        padding: '6px 8px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg)',
+                        color: 'var(--text-h)',
+                        fontSize: '13px',
+                      }}
+                    >
+                      {categories.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    <span style={{ fontSize: '11px', color: 'var(--text)' }}>Status</span>
+                    <select
+                      value={draftStatus}
+                      onChange={(e) => setDraftStatus(e.target.value)}
+                      style={{
+                        padding: '6px 8px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg)',
+                        color: 'var(--text-h)',
+                        fontSize: '13px',
+                      }}
+                    >
+                      <option value="scheduled">Scheduled</option>
+                      <option value="pending">Pending</option>
+                      <option value="confirmed">Confirmed</option>
+                      <option value="cancelled">Cancelled</option>
+                    </select>
+                  </div>
+                </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'var(--text)', marginBottom: '10px' }}>
+                  <input type="checkbox" checked={editMode} onChange={(e) => setEditMode(e.target.checked)} />
+                  Edit
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={handleUpdateEvent}
+                    style={{
+                      flex: 1,
+                      padding: '8px',
+                      borderRadius: '6px',
+                      border: '1px solid var(--accent-border)',
+                      background: 'var(--accent-bg)',
+                      color: 'var(--accent)',
+                      cursor: 'pointer',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                    }}
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={() => setEditMode(false)}
+                    style={{
+                      flex: 1,
+                      padding: '8px',
+                      borderRadius: '6px',
+                      border: '1px solid var(--border)',
+                      background: 'var(--bg)',
+                      color: 'var(--text-h)',
+                      cursor: 'pointer',
+                      fontSize: '13px',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              // View mode: read-only display
+              <>
+                <div style={{
+                  fontSize: '16px',
                   fontWeight: 600,
-                }}
-              >
-                Delete
-              </button>
-              <button
-                onClick={() => setPopupEvent(null)}
-                style={{
-                  flex: 1,
-                  padding: '8px',
-                  borderRadius: '6px',
-                  border: '1px solid var(--border)',
-                  background: 'var(--bg)',
                   color: 'var(--text-h)',
-                  cursor: 'pointer',
+                  marginBottom: '12px',
+                }}>
+                  {popupEvent.title}
+                </div>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  marginBottom: '12px',
                   fontSize: '13px',
-                }}
-              >
-                Close
-              </button>
-            </div>
+                  color: 'var(--text)',
+                }}>
+                  <span style={{
+                    width: '10px',
+                    height: '10px',
+                    borderRadius: '50%',
+                    background: popupEvent.color,
+                    display: 'inline-block',
+                    flexShrink: 0,
+                  }} />
+                  {popupEvent.end_time
+                    ? `${formatPopupTime(popupEvent.start_time)} – ${formatPopupTime(popupEvent.end_time)}`
+                    : 'All day'}
+                </div>
+                {popupEvent.description && (
+                  <div style={{
+                    fontSize: '13px',
+                    color: 'var(--text)',
+                    lineHeight: 1.5,
+                    marginBottom: '12px',
+                  }}>
+                    {popupEvent.description}
+                  </div>
+                )}
+                {popupEvent.location && (
+                  <div style={{
+                    fontSize: '13px',
+                    color: 'var(--text)',
+                    lineHeight: 1.5,
+                    marginBottom: '12px',
+                  }}>
+                    📍 {popupEvent.location}
+                  </div>
+                )}
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'var(--text)', marginBottom: '10px' }}>
+                  <input type="checkbox" checked={editMode} onChange={(e) => setEditMode(e.target.checked)} />
+                  Edit
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {confirmDelete ? (
+                    <>
+                      <button
+                        onClick={() => {
+                          handleDeleteEvent(popupEvent.id)
+                          setConfirmDelete(false)
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: '8px',
+                          borderRadius: '6px',
+                          border: '1px solid #e53e3e',
+                          background: '#e53e3e',
+                          color: '#fff',
+                          cursor: 'pointer',
+                          fontSize: '13px',
+                          fontWeight: 600,
+                        }}
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(false)}
+                        style={{
+                          flex: 1,
+                          padding: '8px',
+                          borderRadius: '6px',
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg)',
+                          color: 'var(--text-h)',
+                          cursor: 'pointer',
+                          fontSize: '13px',
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => setConfirmDelete(true)}
+                        style={{
+                          flex: 1,
+                          padding: '8px',
+                          borderRadius: '6px',
+                          border: '1px solid #e53e3e',
+                          background: 'rgba(229, 62, 62, 0.1)',
+                          color: '#e53e3e',
+                          cursor: 'pointer',
+                          fontSize: '13px',
+                          fontWeight: 600,
+                        }}
+                      >
+                        Delete
+                      </button>
+                      <button
+                        onClick={() => setPopupEvent(null)}
+                        style={{
+                          flex: 1,
+                          padding: '8px',
+                          borderRadius: '6px',
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg)',
+                          color: 'var(--text-h)',
+                          cursor: 'pointer',
+                          fontSize: '13px',
+                        }}
+                      >
+                        Close
+                      </button>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -893,8 +1191,8 @@ function DayView({
   const allDayEvents = dayEvents.filter(e => e.end_time === null)
   const timedEvents = dayEvents.filter(e => e.end_time !== null)
 
-  const START_HOUR = 6
-  const END_HOUR = 23
+  const START_HOUR = 0
+  const END_HOUR = 24
   const TOTAL_HOURS = END_HOUR - START_HOUR
   const HOURS = Array.from({ length: TOTAL_HOURS + 1 }, (_, i) => START_HOUR + i)
 
@@ -903,15 +1201,18 @@ function DayView({
     return h < 12 ? `${h} AM` : `${h - 12} PM`
   }
 
+  const TIMELINE_MARGIN = 2 // percentage margin at top and bottom
+  const TIMELINE_RANGE = 100 - 2 * TIMELINE_MARGIN
+
   const getEventStyle = (ev: DisplayEvent) => {
     const start = new Date(ev.start_time)
     const end = new Date(ev.end_time!)
     const startFrac = start.getHours() + start.getMinutes() / 60
     const endFrac = end.getHours() + end.getMinutes() / 60
-    const top = ((startFrac - START_HOUR) / TOTAL_HOURS) * 100
-    const height = ((endFrac - startFrac) / TOTAL_HOURS) * 100
+    const top = TIMELINE_MARGIN + ((startFrac - START_HOUR) / TOTAL_HOURS) * TIMELINE_RANGE
+    const height = ((endFrac - startFrac) / TOTAL_HOURS) * TIMELINE_RANGE
     return {
-      top: `${Math.max(0, top)}%`,
+      top: `${Math.max(TIMELINE_MARGIN, top)}%`,
       height: `${Math.max(height, 3.5)}%`,
     }
   }
@@ -937,7 +1238,7 @@ function DayView({
           {allDayEvents.map(ev => (
             <div
               key={ev.id}
-              onClick={() => onEventClick(ev)}
+              onClick={(e) => { e.stopPropagation(); onEventClick(ev) }}
               style={{
                 padding: '3px 8px',
                 borderRadius: '4px',
@@ -959,7 +1260,7 @@ function DayView({
         {/* Hour labels column */}
         <div style={{ width: '40px', position: 'relative', flexShrink: 0 }}>
           {HOURS.map(h => {
-            const top = ((h - START_HOUR) / TOTAL_HOURS) * 100
+            const top = TIMELINE_MARGIN + ((h - START_HOUR) / TOTAL_HOURS) * TIMELINE_RANGE
             return (
               <span key={h} style={{
                 position: 'absolute',
@@ -982,7 +1283,9 @@ function DayView({
             const rect = e.currentTarget.getBoundingClientRect()
             const y = e.clientY - rect.top
             const fraction = y / rect.height
-            const totalMinutes = Math.round(fraction * TOTAL_HOURS * 60)
+            // Adjust for timeline margin
+            const adjustedFraction = (fraction * 100 - TIMELINE_MARGIN) / TIMELINE_RANGE
+            const totalMinutes = Math.round(adjustedFraction * TOTAL_HOURS * 60)
             const hour = START_HOUR + Math.floor(totalMinutes / 60)
             const minute = Math.round((totalMinutes % 60) / 30) * 30
             const clickedTime = new Date(currentDate)
@@ -998,7 +1301,7 @@ function DayView({
         >
           {/* Hour lines */}
           {HOURS.map(h => {
-            const top = ((h - START_HOUR) / TOTAL_HOURS) * 100
+            const top = TIMELINE_MARGIN + ((h - START_HOUR) / TOTAL_HOURS) * TIMELINE_RANGE
             return (
               <div key={h} style={{
                 position: 'absolute',
@@ -1017,7 +1320,7 @@ function DayView({
             return (
               <div
                 key={ev.id}
-                onClick={() => onEventClick(ev)}
+                onClick={(e) => { e.stopPropagation(); onEventClick(ev) }}
                 style={{
                   position: 'absolute',
                   top: style.top,
@@ -1064,5 +1367,8 @@ function formatDateTimeLocal(date: Date): string {
   const min = String(date.getMinutes()).padStart(2, '0')
   return `${y}-${m}-${d}T${h}:${min}`
 }
+
+// Alias for clarity - used in edit mode initialization
+const formatDateTimeLocalInput = formatDateTimeLocal
 
 export default Calendar
