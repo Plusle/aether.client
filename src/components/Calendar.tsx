@@ -1,49 +1,173 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
+import {
+  listCategories, listEvents, createEvent, deleteEvent, createCategory,
+  type CalendarCategory, type CalendarEvent,
+} from '../services/calendarApi'
 
 type ViewMode = 'month' | 'day'
 
-interface DummyEvent {
-  id: number
-  title: string
-  start_time: string
-  end_time: string | null
-  category_id: number
-  color: string
-  description?: string
+type DisplayEvent = CalendarEvent & { color: string }
+
+const UNCATEGORIZED: CalendarCategory = { id: 0, name: 'Uncategorized', color: '#808080' }
+
+/** Compute where a date's cell sits in the month grid (relative to grid top-left). */
+function computeCellPosition(date: Date, containerWidth: number) {
+  const year = date.getFullYear()
+  const month = date.getMonth()
+  const firstDayOfWeek = new Date(year, month, 1).getDay()
+  const dayIndex = firstDayOfWeek + date.getDate() - 1
+  const row = Math.floor(dayIndex / 7)
+  const col = dayIndex % 7
+
+  const gap = 4
+  const labelRowHeight = 20 // day-of-week labels + margin
+  const cellSize = (containerWidth - 6 * gap) / 7
+
+  return {
+    x: col * (cellSize + gap) + cellSize / 2,
+    y: labelRowHeight + gap + row * (cellSize + gap) + cellSize / 2,
+    scale: cellSize / containerWidth,
+  }
 }
 
-const CATEGORIES = [
-  { id: 0, name: 'Uncategorized', color: '#808080' },
-  { id: 1, name: 'Work', color: '#3b82f6' },
-  { id: 2, name: 'Personal', color: '#10b981' },
-  { id: 3, name: 'Important', color: '#ef4444' },
-]
-
-function generateDummyEvents(): DummyEvent[] {
-  const now = new Date()
-  const y = now.getFullYear()
-  const m = now.getMonth()
-  const d = now.getDate()
-
-  return [
-    { id: 1, title: 'Team Standup', start_time: new Date(y, m, d, 10, 0).toISOString(), end_time: new Date(y, m, d, 10, 30).toISOString(), category_id: 1, color: '#3b82f6', description: 'Daily sync with the team to discuss progress and blockers.' },
-    { id: 2, title: 'Lunch with Alex', start_time: new Date(y, m, d, 12, 30).toISOString(), end_time: new Date(y, m, d, 13, 30).toISOString(), category_id: 2, color: '#10b981', description: 'Catch up over lunch at the new ramen place downtown.' },
-    { id: 3, title: 'Code Review', start_time: new Date(y, m, d, 15, 0).toISOString(), end_time: new Date(y, m, d, 16, 0).toISOString(), category_id: 1, color: '#3b82f6', description: 'Review the new feature branch for the calendar component.' },
-    { id: 4, title: 'Project Deadline', start_time: new Date(y, m, d + 3, 0, 0).toISOString(), end_time: null, category_id: 3, color: '#ef4444', description: 'Final submission deadline for Q2 deliverables.' },
-    { id: 5, title: 'Gym', start_time: new Date(y, m, d + 1, 18, 0).toISOString(), end_time: new Date(y, m, d + 1, 19, 0).toISOString(), category_id: 2, color: '#10b981', description: 'Leg day workout session.' },
-    { id: 6, title: 'Doctor Appointment', start_time: new Date(y, m, d + 5, 11, 0).toISOString(), end_time: new Date(y, m, d + 5, 11, 30).toISOString(), category_id: 3, color: '#ef4444', description: 'Annual checkup at City Clinic, Room 204.' },
-    { id: 7, title: 'Design Sprint', start_time: new Date(y, m, d - 2, 9, 0).toISOString(), end_time: new Date(y, m, d - 2, 17, 0).toISOString(), category_id: 1, color: '#3b82f6', description: 'Full-day design sprint for the new dashboard layout.' },
-    { id: 8, title: 'Yoga Class', start_time: new Date(y, m, d + 2, 7, 0).toISOString(), end_time: new Date(y, m, d + 2, 8, 0).toISOString(), category_id: 2, color: '#10b981', description: 'Morning yoga class at the community center.' },
-  ]
-}
+const TRANSITION_DURATION = '0.2s'
 
 function Calendar() {
   const [viewMode, setViewMode] = useState<ViewMode>('month')
   const [currentDate, setCurrentDate] = useState(new Date())
   const [selectedDate, setSelectedDate] = useState<Date>(new Date())
-  const [popupEvent, setPopupEvent] = useState<DummyEvent | null>(null)
-  const events = generateDummyEvents()
+  const [popupEvent, setPopupEvent] = useState<DisplayEvent | null>(null)
+  const [apiEvents, setApiEvents] = useState<CalendarEvent[]>([])
+  const [categories, setCategories] = useState<CalendarCategory[]>([UNCATEGORIZED])
+  const [addDialog, setAddDialog] = useState<{ open: boolean; startTime: Date } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
+  const viewWrapperRef = useRef<HTMLDivElement>(null)
+  const transitioningRef = useRef(false)
+
+  // Derive display events (with color from category)
+  const events = useMemo(() => {
+    return apiEvents.map(e => ({
+      ...e,
+      color: categories.find(c => c.id === e.category_id)?.color ?? UNCATEGORIZED.color,
+    }))
+  }, [apiEvents, categories])
+
+  // Fetch categories on mount
+  useEffect(() => {
+    listCategories()
+      .then(cats => setCategories([UNCATEGORIZED, ...cats]))
+      .catch(() => setError('Failed to load categories'))
+  }, [])
+
+  // Fetch events when visible month changes
+  useEffect(() => {
+    const year = currentDate.getFullYear()
+    const month = currentDate.getMonth()
+    const start = new Date(year, month - 1, 1).toISOString()
+    const end = new Date(year, month + 2, 0, 23, 59, 59).toISOString()
+
+    setLoading(true)
+    setError(null)
+    listEvents(start, end)
+      .then(setApiEvents)
+      .catch(() => setError('Failed to load events'))
+      .finally(() => setLoading(false))
+  }, [currentDate.getFullYear(), currentDate.getMonth()])
+
+  // ── Symmetric two-phase transition: collapse then expand ──────
+  const animateTransition = (
+    originX: number,
+    originY: number,
+    scale: number,
+    onSwap: () => void,
+  ) => {
+    const el = viewWrapperRef.current
+    if (!el) return
+    transitioningRef.current = true
+
+    // Phase 1: collapse
+    el.style.transformOrigin = `${originX}px ${originY}px`
+    el.style.transition = `transform ${TRANSITION_DURATION} ease-in`
+
+    const onCollapseEnd = (e: TransitionEvent) => {
+      if (e.propertyName !== 'transform') return
+      el.removeEventListener('transitionend', onCollapseEnd)
+
+      onSwap()
+
+      // Phase 2: expand
+      requestAnimationFrame(() => {
+        el.style.transition = 'none'
+        el.style.transform = `scale(${scale})`
+
+        requestAnimationFrame(() => {
+          el.style.transition = `transform ${TRANSITION_DURATION} ease-out`
+          el.style.transform = 'scale(1)'
+
+          const onExpandEnd = (ev: TransitionEvent) => {
+            if (ev.propertyName !== 'transform') return
+            el.removeEventListener('transitionend', onExpandEnd)
+            el.style.transition = ''
+            el.style.transform = ''
+            el.style.transformOrigin = ''
+            transitioningRef.current = false
+          }
+          el.addEventListener('transitionend', onExpandEnd)
+        })
+      })
+    }
+
+    el.addEventListener('transitionend', onCollapseEnd)
+
+    requestAnimationFrame(() => {
+      el.style.transform = `scale(${scale})`
+    })
+  }
+
+  // ── Month → Day (via cell click) — collapse ──────────────────
+  const handleDayClick = (date: Date, cellEl: HTMLElement) => {
+    if (transitioningRef.current) return
+    const parent = viewWrapperRef.current?.parentElement
+    if (!parent) return
+
+    const parentRect = parent.getBoundingClientRect()
+    if (parentRect.width === 0) { setViewMode('day'); return }
+
+    const cellRect = cellEl.getBoundingClientRect()
+    const originX = cellRect.left + cellRect.width / 2 - parentRect.left
+    const originY = cellRect.top + cellRect.height / 2 - parentRect.top
+    const scale = cellRect.width / parentRect.width
+
+    setSelectedDate(date)
+    setCurrentDate(date)
+
+    animateTransition(originX, originY, scale, () => {
+      setViewMode('day')
+    })
+  }
+
+  // ── Toggle button (either direction) ─────────────────────────
+  const handleViewModeChange = (newMode: ViewMode) => {
+    if (newMode === viewMode || transitioningRef.current) return
+
+    const parent = viewWrapperRef.current?.parentElement
+    if (!parent) { setViewMode(newMode); return }
+
+    const parentRect = parent.getBoundingClientRect()
+    if (parentRect.width === 0) { setViewMode(newMode); return }
+
+    const pos = computeCellPosition(selectedDate, parentRect.width)
+
+    if (viewMode === 'month' && newMode === 'day') {
+      animateTransition(pos.x, pos.y, pos.scale, () => setViewMode('day'))
+    } else {
+      animateTransition(pos.x, pos.y, pos.scale, () => setViewMode('month'))
+    }
+  }
+
+  // ── Navigation ───────────────────────────────────────────────
   const handlePrev = () => {
     if (viewMode === 'month') {
       setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1))
@@ -72,10 +196,47 @@ function Calendar() {
     setSelectedDate(today)
   }
 
-  const handleDayClick = (date: Date) => {
-    setSelectedDate(date)
-    setCurrentDate(date)
-    setViewMode('day')
+  // ── Add / delete events (API) ────────────────────────────────
+  const handleDeleteEvent = async (id: number) => {
+    try {
+      await deleteEvent(id)
+      setApiEvents(prev => prev.filter(e => e.id !== id))
+      setPopupEvent(null)
+    } catch {
+      setError('Failed to delete event')
+    }
+  }
+
+  const handleAddEvent = async (title: string, description: string, startTime: Date, endTime: Date | null, categoryId: number) => {
+    try {
+      const newEvent = await createEvent({
+        title,
+        description: description || undefined,
+        start_time: startTime.toISOString(),
+        end_time: endTime?.toISOString() ?? null,
+        category_id: categoryId,
+        status: 'scheduled',
+      })
+      setApiEvents(prev => [...prev, newEvent])
+      setAddDialog(null)
+    } catch {
+      setError('Failed to create event')
+    }
+  }
+
+  const handleAddCategory = async (name: string, color: string): Promise<number> => {
+    try {
+      const newCat = await createCategory(name, color)
+      setCategories(prev => [...prev, newCat])
+      return newCat.id
+    } catch {
+      setError('Failed to create category')
+      return -1
+    }
+  }
+
+  const handleEmptySlotClick = (time: Date) => {
+    setAddDialog({ open: true, startTime: time })
   }
 
   const headerLabel = viewMode === 'month'
@@ -83,7 +244,7 @@ function Calendar() {
     : selectedDate.toLocaleDateString('default', { weekday: 'short', month: 'long', day: 'numeric' })
 
   return (
-    <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+    <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', height: '100%', boxSizing: 'border-box' }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', gap: '4px' }}>
@@ -147,7 +308,7 @@ function Calendar() {
           {(['month', 'day'] as ViewMode[]).map(mode => (
             <button
               key={mode}
-              onClick={() => setViewMode(mode)}
+              onClick={() => handleViewModeChange(mode)}
               style={{
                 padding: '4px 12px',
                 border: 'none',
@@ -164,11 +325,22 @@ function Calendar() {
         </div>
       </div>
 
-      {/* View content */}
-      {viewMode === 'month'
-        ? <MonthView currentDate={currentDate} events={events} onDayClick={handleDayClick} />
-        : <DayView currentDate={selectedDate} events={events} onEventClick={(ev) => setPopupEvent(ev)} />
-      }
+      {/* Error display */}
+      {error && (
+        <div style={{ color: '#e53e3e', fontSize: '13px', padding: '0 4px' }}>
+          {error}
+        </div>
+      )}
+
+      {/* Animated view container */}
+      <div style={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', background: 'var(--bg)' }}>
+        <div ref={viewWrapperRef} style={{ width: '100%', height: '100%' }}>
+          {viewMode === 'month'
+            ? <MonthView currentDate={currentDate} events={events} onDayClick={handleDayClick} />
+            : <DayView currentDate={selectedDate} events={events} onEventClick={(ev) => setPopupEvent(ev)} onEmptyClick={handleEmptySlotClick} />
+          }
+        </div>
+      </div>
 
       {/* Event popup */}
       {popupEvent && (
@@ -237,24 +409,341 @@ function Calendar() {
                 {popupEvent.description}
               </div>
             )}
-            <button
-              onClick={() => setPopupEvent(null)}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                onClick={() => handleDeleteEvent(popupEvent.id)}
+                style={{
+                  flex: 1,
+                  padding: '8px',
+                  borderRadius: '6px',
+                  border: '1px solid #e53e3e',
+                  background: 'rgba(229, 62, 62, 0.1)',
+                  color: '#e53e3e',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                }}
+              >
+                Delete
+              </button>
+              <button
+                onClick={() => setPopupEvent(null)}
+                style={{
+                  flex: 1,
+                  padding: '8px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg)',
+                  color: 'var(--text-h)',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add event dialog */}
+      {addDialog?.open && (
+        <AddEventDialog
+          startTime={addDialog.startTime}
+          categories={categories}
+          onAdd={handleAddEvent}
+          onAddCategory={handleAddCategory}
+          onClose={() => setAddDialog(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+function AddEventDialog({
+  startTime,
+  categories,
+  onAdd,
+  onAddCategory,
+  onClose,
+}: {
+  startTime: Date
+  categories: CalendarCategory[]
+  onAdd: (title: string, description: string, startTime: Date, endTime: Date | null, categoryId: number) => void
+  onAddCategory: (name: string, color: string) => Promise<number>
+  onClose: () => void
+}) {
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [startStr, setStartStr] = useState(formatDateTimeLocal(startTime))
+  const [endStr, setEndStr] = useState(formatDateTimeLocal(new Date(startTime.getTime() + 60 * 60 * 1000)))
+  const [categoryId, setCategoryId] = useState(categories.find(c => c.id > 0)?.id ?? 1)
+  const [allDay, setAllDay] = useState(false)
+  const [showCategoryForm, setShowCategoryForm] = useState(false)
+  const [newCatName, setNewCatName] = useState('')
+  const [newCatColor, setNewCatColor] = useState('#6366f1')
+
+  const handleSave = () => {
+    if (!title.trim()) return
+    const start = new Date(startStr)
+    const end = allDay ? null : new Date(endStr)
+    onAdd(title.trim(), description.trim(), start, end, categoryId)
+  }
+
+  const handleCreateCategory = async () => {
+    if (!newCatName.trim()) return
+    const newId = await onAddCategory(newCatName.trim(), newCatColor)
+    if (newId > 0) {
+      setCategoryId(newId)
+      setNewCatName('')
+      setNewCatColor('#6366f1')
+      setShowCategoryForm(false)
+    }
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        top: 0, left: 0, right: 0, bottom: 0,
+        background: 'rgba(0,0,0,0.3)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 2000,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'var(--bg)',
+          border: '1px solid var(--border)',
+          borderRadius: '12px',
+          padding: '20px',
+          minWidth: '300px',
+          maxWidth: '380px',
+          boxShadow: 'var(--shadow)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '10px',
+        }}
+      >
+        <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-h)' }}>
+          New Event
+        </div>
+
+        <input
+          placeholder="Event title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          autoFocus
+          style={{
+            padding: '8px 10px',
+            borderRadius: '6px',
+            border: '1px solid var(--border)',
+            background: 'var(--bg)',
+            color: 'var(--text-h)',
+            fontSize: '14px',
+          }}
+        />
+
+        <textarea
+          placeholder="Description (optional)"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={2}
+          style={{
+            padding: '8px 10px',
+            borderRadius: '6px',
+            border: '1px solid var(--border)',
+            background: 'var(--bg)',
+            color: 'var(--text-h)',
+            fontSize: '13px',
+            resize: 'vertical',
+            fontFamily: 'inherit',
+          }}
+        />
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'var(--text)' }}>
+          <input type="checkbox" checked={allDay} onChange={(e) => setAllDay(e.target.checked)} />
+          All day
+        </label>
+
+        {!allDay && (
+          <>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <span style={{ fontSize: '11px', color: 'var(--text)' }}>Start</span>
+              <input
+                type="datetime-local"
+                value={startStr}
+                onChange={(e) => setStartStr(e.target.value)}
+                style={{
+                  padding: '6px 8px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg)',
+                  color: 'var(--text-h)',
+                  fontSize: '13px',
+                }}
+              />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <span style={{ fontSize: '11px', color: 'var(--text)' }}>End</span>
+              <input
+                type="datetime-local"
+                value={endStr}
+                onChange={(e) => setEndStr(e.target.value)}
+                style={{
+                  padding: '6px 8px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg)',
+                  color: 'var(--text-h)',
+                  fontSize: '13px',
+                }}
+              />
+            </div>
+          </>
+        )}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+          <span style={{ fontSize: '11px', color: 'var(--text)' }}>Category</span>
+          <div style={{ display: 'flex', gap: '4px' }}>
+            <select
+              value={categoryId}
+              onChange={(e) => setCategoryId(Number(e.target.value))}
               style={{
-                width: '100%',
-                padding: '8px',
+                flex: 1,
+                padding: '6px 8px',
+                borderRadius: '6px',
+                border: '1px solid var(--border)',
+                background: 'var(--bg)',
+                color: 'var(--text-h)',
+                fontSize: '13px',
+              }}
+            >
+              {categories.filter(c => c.id > 0).map(c => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => setShowCategoryForm(!showCategoryForm)}
+              style={{
+                padding: '6px 10px',
                 borderRadius: '6px',
                 border: '1px solid var(--border)',
                 background: 'var(--bg)',
                 color: 'var(--text-h)',
                 cursor: 'pointer',
-                fontSize: '13px',
+                fontSize: '14px',
+                lineHeight: 1,
               }}
+              title="Add category"
             >
-              Close
+              +
             </button>
           </div>
+
+          {showCategoryForm && (
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '4px',
+              padding: '8px',
+              borderRadius: '6px',
+              border: '1px solid var(--border)',
+              background: 'var(--bg)',
+              marginTop: '2px',
+            }}>
+              <input
+                placeholder="Category name"
+                value={newCatName}
+                onChange={(e) => setNewCatName(e.target.value)}
+                autoFocus
+                style={{
+                  padding: '6px 8px',
+                  borderRadius: '4px',
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg)',
+                  color: 'var(--text-h)',
+                  fontSize: '13px',
+                }}
+              />
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                <input
+                  type="color"
+                  value={newCatColor}
+                  onChange={(e) => setNewCatColor(e.target.value)}
+                  style={{
+                    width: '32px',
+                    height: '28px',
+                    padding: '0',
+                    border: '1px solid var(--border)',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    background: 'none',
+                  }}
+                />
+                <button
+                  onClick={handleCreateCategory}
+                  disabled={!newCatName.trim()}
+                  style={{
+                    flex: 1,
+                    padding: '5px 8px',
+                    borderRadius: '4px',
+                    border: '1px solid var(--accent-border)',
+                    background: 'var(--accent-bg)',
+                    color: 'var(--accent)',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: newCatName.trim() ? 'pointer' : 'not-allowed',
+                    opacity: newCatName.trim() ? 1 : 0.5,
+                  }}
+                >
+                  Create
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-      )}
+
+        <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+          <button
+            onClick={handleSave}
+            disabled={!title.trim()}
+            style={{
+              flex: 1,
+              padding: '8px',
+              borderRadius: '6px',
+              border: '1px solid var(--accent-border)',
+              background: 'var(--accent-bg)',
+              color: 'var(--accent)',
+              cursor: title.trim() ? 'pointer' : 'not-allowed',
+              fontSize: '13px',
+              fontWeight: 600,
+              opacity: title.trim() ? 1 : 0.5,
+            }}
+          >
+            Save
+          </button>
+          <button
+            onClick={onClose}
+            style={{
+              flex: 1,
+              padding: '8px',
+              borderRadius: '6px',
+              border: '1px solid var(--border)',
+              background: 'var(--bg)',
+              color: 'var(--text-h)',
+              cursor: 'pointer',
+              fontSize: '13px',
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -265,8 +754,8 @@ function MonthView({
   onDayClick,
 }: {
   currentDate: Date
-  events: DummyEvent[]
-  onDayClick: (date: Date) => void
+  events: DisplayEvent[]
+  onDayClick: (date: Date, cellEl: HTMLElement) => void
 }) {
   const year = currentDate.getFullYear()
   const month = currentDate.getMonth()
@@ -299,7 +788,7 @@ function MonthView({
     cells.push(
       <div
         key={day}
-        onClick={() => onDayClick(new Date(year, month, day))}
+        onClick={(e) => onDayClick(new Date(year, month, day), e.currentTarget)}
         style={{
           aspectRatio: '1',
           padding: '3px',
@@ -387,10 +876,12 @@ function DayView({
   currentDate,
   events,
   onEventClick,
+  onEmptyClick,
 }: {
   currentDate: Date
-  events: DummyEvent[]
-  onEventClick: (ev: DummyEvent) => void
+  events: DisplayEvent[]
+  onEventClick: (ev: DisplayEvent) => void
+  onEmptyClick: (time: Date) => void
 }) {
   const dayEvents = events.filter(e => {
     const d = new Date(e.start_time)
@@ -412,7 +903,7 @@ function DayView({
     return h < 12 ? `${h} AM` : `${h - 12} PM`
   }
 
-  const getEventStyle = (ev: DummyEvent) => {
+  const getEventStyle = (ev: DisplayEvent) => {
     const start = new Date(ev.start_time)
     const end = new Date(ev.end_time!)
     const startFrac = start.getHours() + start.getMinutes() / 60
@@ -486,11 +977,25 @@ function DayView({
         </div>
 
         {/* Timeline area */}
-        <div style={{
-          flex: 1,
-          position: 'relative',
-          borderLeft: '1px solid var(--border)',
-        }}>
+        <div
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect()
+            const y = e.clientY - rect.top
+            const fraction = y / rect.height
+            const totalMinutes = Math.round(fraction * TOTAL_HOURS * 60)
+            const hour = START_HOUR + Math.floor(totalMinutes / 60)
+            const minute = Math.round((totalMinutes % 60) / 30) * 30
+            const clickedTime = new Date(currentDate)
+            clickedTime.setHours(hour, minute, 0, 0)
+            onEmptyClick(clickedTime)
+          }}
+          style={{
+            flex: 1,
+            position: 'relative',
+            borderLeft: '1px solid var(--border)',
+            cursor: 'pointer',
+          }}
+        >
           {/* Hour lines */}
           {HOURS.map(h => {
             const top = ((h - START_HOUR) / TOTAL_HOURS) * 100
@@ -549,6 +1054,15 @@ function DayView({
 
 function formatPopupTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+}
+
+function formatDateTimeLocal(date: Date): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  const h = String(date.getHours()).padStart(2, '0')
+  const min = String(date.getMinutes()).padStart(2, '0')
+  return `${y}-${m}-${d}T${h}:${min}`
 }
 
 export default Calendar

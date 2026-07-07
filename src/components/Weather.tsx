@@ -20,8 +20,8 @@ function Weather() {
       if (records.length === 0) {
         setError('No data available. Try "Fresh Update" first.');
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Query failed');
+    } catch {
+      setError('Failed to load weather data');
       setRecord(null);
     } finally {
       setLoading(false);
@@ -38,8 +38,8 @@ function Weather() {
           queryRecord(data[0].location_id);
         }
       })
-      .catch((e) => {
-        setError(e instanceof Error ? e.message : 'Failed to load regions');
+      .catch(() => {
+        setError('Failed to load regions');
       });
   }, [queryRecord]);
 
@@ -58,8 +58,8 @@ function Weather() {
     try {
       await updateWeather();
       await queryRecord(selectedId);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Update failed');
+    } catch {
+      setError('Failed to update weather data');
     } finally {
       setUpdating(false);
     }
@@ -100,11 +100,11 @@ function Weather() {
             background: 'var(--bg)',
             color: 'var(--text-h)',
             fontSize: '13px',
-            cursor: loading ? 'wait' : 'pointer',
-            opacity: loading ? 0.6 : 1,
+            cursor: loading || !selectedId ? 'not-allowed' : 'pointer',
+            opacity: loading || !selectedId ? 0.6 : 1,
           }}
         >
-          {loading ? 'Querying...' : 'Query'}
+          Query
         </button>
         <button
           onClick={handleFreshUpdate}
@@ -117,11 +117,11 @@ function Weather() {
             color: 'var(--accent)',
             fontSize: '13px',
             fontWeight: 600,
-            cursor: updating ? 'wait' : 'pointer',
-            opacity: updating ? 0.6 : 1,
+            cursor: updating || !selectedId ? 'not-allowed' : 'pointer',
+            opacity: updating || !selectedId ? 0.6 : 1,
           }}
         >
-          {updating ? 'Updating...' : 'Force Update'}
+          Force Update
         </button>
       </div>
 

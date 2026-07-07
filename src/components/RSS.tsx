@@ -46,8 +46,8 @@ function RSS() {
     try {
       const data = await getArticles(url, catId, 0, 20);
       setArticles(data);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load articles');
+    } catch {
+      setError('Failed to load articles');
       setArticles([]);
     } finally {
       setLoading(false);
@@ -89,8 +89,8 @@ function RSS() {
           setActiveTab(urls[0]);
           queryArticles(urls[0], catId);
         }
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to initialize RSS');
+      } catch {
+        setError('Failed to initialize RSS');
       }
     })();
   }, [queryArticles]);
@@ -148,8 +148,8 @@ function RSS() {
       queryArticles(newUrl.trim(), categoryId);
       setNewUrl('');
       setNewName('');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to add feed');
+    } catch {
+      setError('Failed to add feed');
     }
   };
 
@@ -166,8 +166,8 @@ function RSS() {
       if (activeTab) {
         await queryArticles(activeTab, categoryId);
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Update failed');
+    } catch {
+      setError('Failed to update feeds');
     } finally {
       setUpdating(false);
     }
@@ -342,12 +342,12 @@ function RSS() {
           color: 'var(--accent)',
           fontSize: '13px',
           fontWeight: 600,
-          cursor: updating ? 'wait' : 'pointer',
-          opacity: updating ? 0.6 : 1,
+          cursor: updating || !activeTab ? 'not-allowed' : 'pointer',
+          opacity: updating || !activeTab ? 0.6 : 1,
           alignSelf: 'flex-start',
         }}
       >
-        {updating ? 'Updating...' : 'Force Update'}
+        Force Update
       </button>
 
       {/* Error */}
